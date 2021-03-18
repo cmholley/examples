@@ -1,12 +1,12 @@
 /**
  * Copyright 2020 Confluent Inc.
- *
+ * <p>
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- *
+ * <p>
  * http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -31,7 +31,12 @@ import org.apache.kafka.clients.admin.NewTopic;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.concurrent.ExecutionException;
+import java.util.Random;
+import java.util.HashMap;
+import java.util.UUID;
+
 import org.apache.kafka.common.errors.TopicExistsException;
+
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -44,21 +49,35 @@ public class ProducerAvroExample {
 
   // Create topic in Confluent Cloud
   public static void createTopic(final String topic,
-                          final Properties cloudConfig) {
-      final NewTopic newTopic = new NewTopic(topic, Optional.empty(), Optional.empty());
-      try (final AdminClient adminClient = AdminClient.create(cloudConfig)) {
-          adminClient.createTopics(Collections.singletonList(newTopic)).all().get();
-      } catch (final InterruptedException | ExecutionException e) {
-          // Ignore if TopicExistsException, which may be valid if topic exists
-          if (!(e.getCause() instanceof TopicExistsException)) {
-              throw new RuntimeException(e);
-          }
+                                 final Properties cloudConfig) {
+    final NewTopic newTopic = new NewTopic(topic, Optional.empty(), Optional.empty());
+    try (final AdminClient adminClient = AdminClient.create(cloudConfig)) {
+      adminClient.createTopics(Collections.singletonList(newTopic)).all().get();
+    } catch (final InterruptedException | ExecutionException e) {
+      // Ignore if TopicExistsException, which may be valid if topic exists
+      if (!(e.getCause() instanceof TopicExistsException)) {
+        throw new RuntimeException(e);
       }
+    }
+  }
+
+  // Generates a random value for the header with 25% chance of B and 75% chance of A
+  public static String randomHeaderValue() {
+    Random rand = new Random();
+    int choose = rand.nextInt(4);
+    if (choose == 0) {
+      return "A";
+    } else {
+      return "B";
+    }
   }
 
   public static void main(final String[] args) throws IOException {
+    final String dataTopic = "SalesTransactionMan-Data";
+    final String metaDataTopic = "SalesTransactionMan-MetaData";
+
     if (args.length != 2) {
-      System.out.println("Please provide command line arguments: configPath topic");
+      System.out.println("Please provide command line arguments: configPath numMessages");
       System.exit(1);
     }
 
@@ -68,41 +87,85 @@ public class ProducerAvroExample {
     // Follow these instructions to create this file: https://docs.confluent.io/platform/current/tutorials/examples/clients/docs/java.html
     final Properties props = loadConfig(args[0]);
 
-    // Create topic if needed
-    final String topic = args[1];
-    createTopic(topic, props);
+    // Create topics if needed
+    createTopic(dataTopic, props);
+    createTopic(metaDataTopic, props);
+
+    // Set the number of records to be produced
+    final int numMessages = Integer.parseInt(args[1]);
 
     // Add additional properties.
     props.put(ProducerConfig.ACKS_CONFIG, "all");
     props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer");
     props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class);
 
-    Producer<String, DataRecordAvro> producer = new KafkaProducer<String, DataRecordAvro>(props);
+    // These producers need to be merged into a single one so we can write transactionally.
+    // Or we need to figure out how to have both producers use the same transaction
+    Producer<String, SalesTransaction> stProducer = new KafkaProducer<String, SalesTransaction>(props);
+    Producer<String, DataPlaneMetaData> mdProducer = new KafkaProducer<String, DataPlaneMetaData>(props);
+
+    Random rand = new Random();
 
     // Produce sample data
-    final Long numMessages = 10L;
-    for (Long i = 0L; i < numMessages; i++) {
-      String key = "alice";
-      DataRecordAvro record = new DataRecordAvro(i);
+    for (int i = 0; i < numMessages; i++) {
+      String key = "tenantA";
 
-      System.out.printf("Producing record: %s\t%s%n", key, record);
-      producer.send(new ProducerRecord<String, DataRecordAvro>(topic, key, record), new Callback() {
-          @Override
-          public void onCompletion(RecordMetadata m, Exception e) {
-            if (e != null) {
-              e.printStackTrace();
-            } else {
-              System.out.printf("Produced record to topic %s partition [%d] @ offset %d%n", m.topic(), m.partition(), m.offset());
-            }
+      // Generate Transaction ID
+      UUID tid = UUID.randomUUID();
+      /*
+       * This class is generated by the SalesTranscation.avsc AVRO schema. The constructor follows the same order as the Avro Schema
+       * transaction_id, product_id, customer_id, volume, net_price
+       * These values are determined in the following way
+       * UUID generated, random between products-{1,2,3}, constant customer Id, random volume int between 1-5, random price int between 1-20
+       */
+      SalesTransaction transaction = new SalesTransaction(tid.toString(), ("product-" + (rand.nextInt(3))), "customer-1234", rand.nextInt(5) + 1, rand.nextInt(20) + 1);
+
+      // Generate Header Map
+      Map<String, String> headerMap = new HashMap<>();
+      headerMap.put("SampleHeader", randomHeaderValue());
+
+      /*
+       * This class is generated by the DataPlaneMetaData.avsc AVRO schema. The constructor follows the same order as the Avro Schema
+       * tenant,
+       * These values are determined in the following way
+       * UUID generated, random between products-{1,2,3}, constant customer Id, random volume int between 1-5, random price int between 1-20
+       */
+      DataPlaneMetaData metaData = new DataPlaneMetaData(tid.toString(), "tenantA", "SalesTransaction", rand.nextInt(2) + 1, headerMap);
+
+      if (numMessages <= 30) {
+        System.out.printf("Producing record: %s\t%s%n", key, transaction);
+      }
+      stProducer.send(new ProducerRecord<String, SalesTransaction>(dataTopic, key, transaction), new Callback() {
+        @Override
+        public void onCompletion(RecordMetadata m, Exception e) {
+          if (e != null) {
+            e.printStackTrace();
+          } else if (numMessages <= 20) {
+            //If the number of records is more than 20, don't print each time
+            System.out.printf("Produced record to topic %s partition [%d] @ offset %d%n", m.topic(), m.partition(), m.offset());
           }
+        }
+      });
+      mdProducer.send(new ProducerRecord<String, DataPlaneMetaData>(metaDataTopic, key, metaData), new Callback() {
+        @Override
+        public void onCompletion(RecordMetadata m, Exception e) {
+          if (e != null) {
+            e.printStackTrace();
+          } else if (numMessages <= 20) {
+            //If the number of records is more than 20, don't print each time
+            System.out.printf("Produced record to topic %s partition [%d] @ offset %d%n", m.topic(), m.partition(), m.offset());
+          }
+        }
       });
     }
 
-    producer.flush();
+    stProducer.flush();
+    mdProducer.flush();
 
-    System.out.printf("10 messages were produced to topic %s%n", topic);
+    System.out.printf(numMessages + " messages were produced to topics");
 
-    producer.close();
+    stProducer.close();
+    mdProducer.close();
   }
 
   public static Properties loadConfig(final String configFile) throws IOException {

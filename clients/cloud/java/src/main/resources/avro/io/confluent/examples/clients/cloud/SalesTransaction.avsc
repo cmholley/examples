@@ -1,0 +1,42 @@
+{
+  "doc": "Sales transaction data records sales order activities in an ordering system.",
+  "fields": [
+    {
+      "doc": "Uniquely identifies a sales transaction record for a given tenant.",
+      "name": "transaction_id",
+      "type": {
+        "avro.java.string": "String",
+        "type": "string"
+      }
+    },
+    {
+      "doc": "Represents the unique identifier of the product ordered in this sales transaction.",
+      "name": "product_id",
+      "type": {
+        "avro.java.string": "String",
+        "type": "string"
+      }
+    },
+    {
+      "doc": "Represents the unique identifier of the customer who made this sales transaction.",
+      "name": "customer_id",
+      "type": {
+        "avro.java.string": "String",
+        "type": "string"
+      }
+    },
+    {
+      "doc": "Represents the number of units purchased in this sales transaction.",
+      "name": "volume",
+      "type": "int"
+    },
+    {
+      "doc": "Represents the net unit price the customer paid for each product quantity.",
+      "name": "net_price",
+      "type": "int"
+    }
+  ],
+  "name": "SalesTransaction",
+  "namespace": "io.confluent.examples.clients.cloud",
+  "type": "record"
+}

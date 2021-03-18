@@ -1,0 +1,30 @@
+{
+    "type": "record",
+    "name": "DataPlaneMetaData",
+    "namespace": "io.confluent.examples.clients.cloud",
+    "fields": [
+        {
+            "name": "record_id",
+            "type": "string"
+        },
+        {
+            "name": "tenant",
+            "type": "string"
+        },
+        {
+            "name": "dataset_name",
+            "type": "string"
+        },
+        {
+            "name": "dataset_version",
+            "type": "int"
+        },
+        {
+            "name": "string_headers",
+            "type": {
+                "type": "map",
+                "values": "string"
+            }
+        }
+    ]
+}
